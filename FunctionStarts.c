@@ -27,6 +27,7 @@ void dump_function_starts(void) {
         uint64_t linkedit_seg_end = 0;
         uint64_t linkedit_seg_fileoff = 0;
         
+        uint64_t text_seg_start = 0;
         uint64_t text_sect_start = 0;
         uint64_t text_sect_end = 0;
         
@@ -43,32 +44,33 @@ void dump_function_starts(void) {
                         linkedit_seg_end = linkedit_seg_start + seg_cmd->vmsize;
                     }
                     
-                    // Get the __text section info so that we can verify the function addresses parsed later
-                    for (uint32_t sect_idx = 0; sect_idx < seg_cmd->nsects; sect_idx++) {
-                        const struct section_64 *section = (const struct section_64 *)(seg_cmd + 1) + sect_idx;
-                        if (strncmp(section->sectname, SECT_TEXT, sizeof(section->sectname)) == 0) {
-                            text_sect_start = section->addr + slide;
-                            text_sect_end = text_sect_start + section->size;
-                            break;
+                    if (strncmp(seg_cmd->segname, SEG_TEXT, sizeof(seg_cmd->segname)) == 0) {
+                        text_seg_start = seg_cmd->vmaddr + slide;
+                        // Get the __text section info so that we can verify the function addresses parsed later
+                        for (uint32_t sect_idx = 0; sect_idx < seg_cmd->nsects; sect_idx++) {
+                            const struct section_64 *section = (const struct section_64 *)(seg_cmd + 1) + sect_idx;
+                            if (strncmp(section->sectname, SECT_TEXT, sizeof(section->sectname)) == 0) {
+                                text_sect_start = section->addr + slide;
+                                text_sect_end = text_sect_start + section->size;
+                                break;
+                            }
                         }
                     }
                     
                     break;
                 }
                 case LC_FUNCTION_STARTS: {
-                    const struct linkedit_data_command *led_cmd = (const void *)load_cmd;
+                    const struct linkedit_data_command *data_cmd = (const void *)load_cmd;
+                    assert(data_cmd->dataoff > linkedit_seg_fileoff);
+                    const uint32_t offset_from_linkedit = data_cmd->dataoff - linkedit_seg_fileoff;
+                    const uint8_t *start = (const uint8_t *)linkedit_seg_start + offset_from_linkedit;
+                    const uint8_t *end = start + data_cmd->datasize;
+                    assert((uintptr_t)end < linkedit_seg_end);
                     
-                    const uint8_t *infoStart =  (const uint8_t *)linkedit_seg_start - linkedit_seg_fileoff + led_cmd->dataoff;
-                    const uint8_t *infoEnd = infoStart + led_cmd->datasize;
-                    assert(// function starts data resides in the __LINKEDIT segment
-                           (uintptr_t)infoStart >= linkedit_seg_start &&
-                           (uintptr_t)infoEnd < linkedit_seg_end);
-                    
-                    // Function starts are stored as a series of offsets (i.e. functino sizes) starting at __text and encoded as LEB128.
+                    uint64_t address = text_seg_start;
+                    // Function starts are stored as a series of offsets encoded as LEB128.
                     // Adapted from DyldInfoPrinter<A>::printFunctionStartsInfo() in ld64-127.2/src/other/dyldinfo.cpp
-                    uint64_t address = (uint64_t)header;
-                    
-                    for (const uint8_t *p = infoStart; (*p != 0) && (p < infoEnd); ) {
+                    for (const uint8_t *p = start; (*p != 0) && (p < end); ) {
                         uint64_t delta = 0;
                         uint32_t shift = 0;
                         bool more = true;
